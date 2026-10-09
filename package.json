@@ -1,0 +1,52 @@
+{
+  "name": "opencode-model-failover",
+  "version": "0.1.0",
+  "description": "Native model failover for OpenCode v2: move a failed session onto the next healthy model in a chain you define.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "opencode-v2",
+    "model-failover",
+    "model-fallback",
+    "failover",
+    "rate-limit",
+    "quota",
+    "resilience",
+    "llm",
+    "ai-coding-agent"
+  ],
+  "license": "MIT",
+  "author": "Nabheet S. Sandhu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nabheet/opencode-model-failover.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nabheet/opencode-model-failover/issues"
+  },
+  "homepage": "https://github.com/nabheet/opencode-model-failover#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "lint": "markdownlint-cli2",
+    "test": "node --check index.js && node --test test/*.test.mjs",
+    "check": "npm run lint && npm test"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "^0.23.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  // markdownlint-cli2 config — full enforcement, no rule exclusions.
+  // Full rule list: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+  "config": {
+    "default": true,
+    // MD013: line length — enforced at 100 everywhere.
+    "MD013": { "line_length": 100 }
+  },
+  "globs": ["**/*.md", "!node_modules/**", "!dist/**", "!.git/**"]
+}
