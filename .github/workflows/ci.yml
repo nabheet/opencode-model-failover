@@ -23,6 +23,10 @@ on:
     tags: ["v*-beta*"]
   pull_request:
     branches: [main]
+    # ready_for_review is not a default pull_request activity type, so without
+    # this a PR marked ready runs nothing; listing it makes the per-PR beta
+    # publish fire on that transition.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 jobs:
