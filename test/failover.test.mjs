@@ -1,24 +1,15 @@
-// Tests for the model-failover plugin contract.
-//
-// The OpenCode v2 event stream is faked: ctx.event.subscribe() returns an async
-// iterable that the test pushes events into, and every other v2 surface
-// (ctx.model.list, ctx.session.*) is a stub. No OpenCode process is needed.
-//
-// Each test drives one behaviour the plugin promises: retryable-error gating,
-// chain exhaustion, cooldown after a failed switch, the per-session attempt
-// cap, and the autoRetry off/on split.
+// Tests run against a fake v2 ctx; no OpenCode process is needed.
 
-import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "node:test";
 
 import plugin from "../index.js";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Poll a sync predicate until it is true, or fail the test on timeout. */
 async function waitFor(predicate, { timeout = 3000, interval = 5 } = {}) {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -28,7 +19,6 @@ async function waitFor(predicate, { timeout = 3000, interval = 5 } = {}) {
   }
 }
 
-/** A temp log path unique to one test. */
 function mkLog() {
   return join(mkdtempSync(join(tmpdir(), "model-failover-")), "failover.log");
 }
@@ -41,7 +31,6 @@ function readLog(path) {
   }
 }
 
-/** An async iterable the test controls: push() feeds, close() ends. */
 function createEventStream() {
   const queue = [];
   let waiter = null;
@@ -88,7 +77,6 @@ function failedEvent(sessionID, error) {
   return { type: "session.execution.failed", data: { sessionID, error } };
 }
 
-/** Start the plugin against a fake ctx and register teardown. */
 async function start(t, options, cfg = {}) {
   const stream = createEventStream();
   const calls = { switchModel: [], prompt: [], context: 0, list: 0 };

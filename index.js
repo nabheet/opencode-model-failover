@@ -1,42 +1,11 @@
-// opencode-model-failover — OpenCode v2 plugin.
-//
-// Native model failover built entirely on the OpenCode v2 plugin API:
-//
-//   ctx.event.subscribe()       -> session.execution.failed carries
-//                                  { data: { sessionID, error: { type, message } } }
-//   ctx.model.list()            -> which provider/model pairs actually resolve
-//   ctx.session.switchModel()   -> move the session onto a healthy model
-//   ctx.session.context()       -> read the transcript (only for autoRetry)
-//   ctx.session.prompt()        -> replay the last user message (only for autoRetry)
-//
-// Discovery: a plugin directory exposing index.js is loaded automatically from
-// .opencode/plugins/. Installing the package is enough; a config entry is only
-// needed to pass options:
-//
-//   { "plugins": [
-//       { "package": "opencode-model-failover",
-//         "options": { "fallbackModels": ["provider/model"], "autoRetry": false } } ] }
-//
-// Options (all optional):
-//   fallbackModels  string[]  provider/model chain, tried in order (default: empty)
-//   maxAttempts     number    fallbacks per session (default 2)
-//   cooldownMs      number    skip a failed model this long, in ms (default 60000)
-//   autoRetry       boolean   replay the last user message (default false)
-//   notify          boolean   log each fallback to stderr (default true)
-//   logFile         string    append log lines to this file
-//
-// No chain ships by default: set fallbackModels to your own provider/model
-// pairs. autoRetry is off by default, because replaying a prompt is a
-// state-changing action and is deliberately opt-in.
+// OpenCode v2 plugin. Options and behaviour: see README.md.
 
 import { appendFileSync } from "node:fs";
 
-// Ships empty on purpose — the chain is yours to define. Nothing about the
-// author's provider setup is baked in.
+// Ships empty: the chain is yours to define.
 const DEFAULT_CHAIN = [];
 
-// Failure kinds worth failing over on. A bad request or a validation error will
-// fail identically on every model, so retrying those just burns attempts.
+// Only retryable failures are worth failing over on; a validation error fails on every model.
 const RETRYABLE =
   /no-route|provider\.|rate|quota|overload|unavailable|server|timeout|econn|socket|network|502|503|504|429/i;
 
@@ -58,9 +27,8 @@ export default {
     const cooldownMs = Number.isFinite(opt.cooldownMs) ? opt.cooldownMs : 60_000;
     const autoRetry = opt.autoRetry === true;
     const notify = opt.notify !== false;
-    // Optional file sink — the only reliable way to observe a server-side
-    // plugin. The env var fallback keeps it usable without touching config.
-    const logFile = typeof opt.logFile === "string" ? opt.logFile : process.env.MODEL_FALLBACK_LOG || "";
+    const logFile =
+      typeof opt.logFile === "string" ? opt.logFile : process.env.MODEL_FALLBACK_LOG || "";
 
     const attempts = new Map(); // sessionID -> failovers used
     const busy = new Set(); // sessionID -> failover in flight
@@ -72,9 +40,7 @@ export default {
       if (logFile) {
         try {
           appendFileSync(logFile, `${line}\n`);
-        } catch {
-          /* best effort */
-        }
+        } catch {}
       }
       if (notify) console.error(line);
     };
@@ -98,9 +64,9 @@ export default {
       const rows = Array.isArray(messages) ? messages : [];
       for (let i = rows.length - 1; i >= 0; i--) {
         const row = rows[i] || {};
-        const role = row.role || (row.info && row.info.role);
+        const role = row.role || row.info?.role;
         if (role !== "user") continue;
-        const parts = row.parts || (row.info && row.info.parts) || [];
+        const parts = row.parts || row.info?.parts || [];
         const text = parts
           .filter((p) => p && p.type === "text" && typeof p.text === "string")
           .map((p) => p.text)
@@ -138,11 +104,11 @@ export default {
         });
         log(
           `session ${sessionID} moved to ${next} (attempt ${used + 1}/${maxAttempts}) after ` +
-            `${(error && error.type) || "error"}`,
+            `${error?.type || "error"}`,
         );
       } catch (e) {
         cooldown.set(next, Date.now() + cooldownMs);
-        log(`switchModel to ${next} failed: ${e && e.message}`);
+        log(`switchModel to ${next} failed: ${e?.message}`);
         return;
       }
 
@@ -152,7 +118,7 @@ export default {
         const text = lastUserText(transcript && (transcript.data || transcript));
         if (text) await ctx.session.prompt({ sessionID, text });
       } catch (e) {
-        log(`autoRetry failed: ${e && e.message}`);
+        log(`autoRetry failed: ${e?.message}`);
       }
     }
 
@@ -160,11 +126,13 @@ export default {
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          if (!event || event.type !== "session.execution.failed") continue;
+          if (event?.type !== "session.execution.failed") continue;
           const data = event.data || {};
           const sessionID = data.sessionID;
           const error = data.error || {};
-          log(`failed event: session=${sessionID} error=${error.type} msg=${String(error.message).slice(0, 120)}`);
+          log(
+            `failed event: session=${sessionID} error=${error.type} msg=${String(error.message).slice(0, 120)}`,
+          );
           if (!sessionID || busy.has(sessionID)) continue;
 
           const haystack = `${error.type || ""} ${error.message || ""}`;
@@ -180,9 +148,7 @@ export default {
             busy.delete(sessionID);
           }
         }
-      } catch {
-        /* stream aborted on unload */
-      }
+      } catch {}
     })();
 
     return () => controller.abort();

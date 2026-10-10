@@ -157,6 +157,16 @@ Every push to a PR publishes an installable beta to the npm `beta` dist-tag:
 opencode plugin add opencode-model-failover@beta
 ```
 
+## Development
+
+```bash
+npm install
+npm run lint       # biome check + markdownlint-cli2
+npm run lint:fix   # apply safe fixes
+npm test           # node:test
+npm run check      # lint + test
+```
+
 ## Releases (maintainers)
 
 All publishing happens in GitHub Actions via npm **trusted publishing** (OIDC
@@ -177,11 +187,13 @@ publisher per package; the workflow filename must stay `ci.yml`):
 - manual dispatch → next `-beta.X` staging publish from `main`, no git change.
 
 One-time bootstrap: npm cannot attach a trusted publisher to a package that does
-not exist yet, so `opencode-model-failover` must be published once by hand
-before the workflow can publish. After that first version exists, configure the
-trusted publisher on npmjs.com (repository `nabheet/opencode-model-failover`,
-workflow filename `ci.yml`, allow `npm publish`), and CI owns every release
-after it.
+not exist yet, so `opencode-model-failover` must be published once by hand before
+the workflow can publish. Then configure the trusted publisher on npmjs.com:
+repository `nabheet/opencode-model-failover`, workflow filename `ci.yml`, and
+tick **Allow `npm publish`**. A trusted publisher created after Sep 03 2026 is
+stage-only by default, and stage-only sends CI publishes to the staging area to
+wait for a 2FA approval instead of going live. A new config must also complete
+its first successful publish within 2 days or it expires.
 
 ## License
 
