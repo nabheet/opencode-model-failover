@@ -48,7 +48,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
+    "@biomejs/biome": "^2.6.2",
     "markdownlint-cli2": "^0.24.0"
   }
 }
