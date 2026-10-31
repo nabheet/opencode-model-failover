@@ -77,6 +77,14 @@ function failedEvent(sessionID, error) {
   return { type: "session.execution.failed", data: { sessionID, error } };
 }
 
+function succeededEvent(sessionID) {
+  return { type: "session.execution.succeeded", data: { sessionID } };
+}
+
+function modelSelectedEvent(sessionID, model) {
+  return { type: "session.model.selected", data: { sessionID, model } };
+}
+
 async function start(t, options, cfg = {}) {
   const stream = createEventStream();
   const calls = { switchModel: [], prompt: [], context: 0, list: 0 };
@@ -223,4 +231,135 @@ test("replays the last user message when autoRetry is on", async (t) => {
   await waitFor(() => calls.prompt.length === 1);
 
   assert.deepEqual(calls.prompt[0], { sessionID: "s1", text: "second prompt" });
+});
+
+test("advances to the next chain entry after each inference failure", async (t) => {
+  const logFile = mkLog();
+  const { calls, push } = await start(
+    t,
+    { fallbackModels: ["a/one", "a/two", "b/three"], maxAttempts: 5, notify: false, logFile },
+    { models: ["a/one", "a/two", "b/three"] },
+  );
+
+  push(failedEvent("s1", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 1);
+  push(failedEvent("s1", { type: "provider.overloaded", message: "503" }));
+  await waitFor(() => calls.switchModel.length === 2);
+  push(failedEvent("s1", { type: "provider.timeout", message: "timed out" }));
+  await waitFor(() => calls.switchModel.length === 3);
+
+  assert.deepEqual(
+    calls.switchModel.map((c) => `${c.model.providerID}/${c.model.id}`),
+    ["a/one", "a/two", "b/three"],
+  );
+});
+
+test("starts a fresh sequence after a successful execution", async (t) => {
+  const logFile = mkLog();
+  const { calls, push } = await start(
+    t,
+    { fallbackModels: ["a/one", "a/two"], maxAttempts: 1, notify: false, logFile },
+    { models: ["a/one", "a/two"] },
+  );
+
+  push(modelSelectedEvent("s1", { providerID: "a", id: "one" }));
+  await delay(20);
+
+  push(failedEvent("s1", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 1);
+  assert.equal(calls.switchModel[0].model.id, "two");
+
+  push(succeededEvent("s1"));
+  await delay(30);
+
+  // New sequence, fresh budget: the chain restarts, so the entry it is not
+  // currently on (`a/one`) is eligible again.
+  push(failedEvent("s1", { type: "provider.timeout", message: "timed out" }));
+  await waitFor(() => calls.switchModel.length === 2);
+
+  assert.equal(calls.switchModel[1].model.id, "one");
+  assert.ok(!readLog(logFile).includes("max attempts reached"));
+});
+
+test("keeps attempt state per session", async (t) => {
+  const logFile = mkLog();
+  const { calls, push } = await start(
+    t,
+    { fallbackModels: ["a/one"], maxAttempts: 1, notify: false, logFile },
+    { models: ["a/one"] },
+  );
+
+  push(failedEvent("s1", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 1);
+  push(failedEvent("s2", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 2);
+
+  assert.deepEqual(
+    calls.switchModel.map((c) => c.sessionID),
+    ["s1", "s2"],
+  );
+});
+
+test("skips the model already selected for the session", async (t) => {
+  const logFile = mkLog();
+  const { calls, push } = await start(
+    t,
+    { fallbackModels: ["a/one", "a/two"], notify: false, logFile },
+    { models: ["a/one", "a/two"] },
+  );
+
+  push(modelSelectedEvent("s1", { providerID: "a", id: "one" }));
+  await delay(20);
+
+  push(failedEvent("s1", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 1);
+
+  assert.equal(calls.switchModel[0].model.id, "two");
+});
+
+test("a failed switch cools the model down without using an attempt", async (t) => {
+  const logFile = mkLog();
+  const { calls, push } = await start(
+    t,
+    { fallbackModels: ["a/one", "a/two"], maxAttempts: 2, notify: false, logFile },
+    {
+      models: ["a/one", "a/two"],
+      onSwitch: (args) => {
+        if (args.model.id === "one") throw new Error("switch rejected");
+      },
+    },
+  );
+
+  push(failedEvent("s1", { type: "provider.timeout", message: "timed out" }));
+  await waitFor(() => readLog(logFile).includes("switchModel to a/one failed"));
+
+  push(failedEvent("s1", { type: "provider.timeout", message: "timed out" }));
+  await waitFor(() => calls.switchModel.length === 2);
+
+  assert.equal(calls.switchModel[1].model.id, "two");
+  assert.ok(readLog(logFile).includes("(attempt 1/2)"));
+});
+
+test("never returns to the model that just failed", async (t) => {
+  const logFile = mkLog();
+  const { calls, push } = await start(
+    t,
+    { fallbackModels: ["a/one", "a/two", "b/three"], maxAttempts: 5, notify: false, logFile },
+    { models: ["a/one", "a/two", "b/three"] },
+  );
+
+  push(modelSelectedEvent("s1", { providerID: "a", id: "one" }));
+  await delay(20);
+  push(failedEvent("s1", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 1);
+
+  push(modelSelectedEvent("s1", { providerID: "a", id: "two" }));
+  await delay(20);
+  push(failedEvent("s1", { type: "provider.rateLimit", message: "429" }));
+  await waitFor(() => calls.switchModel.length === 2);
+
+  assert.deepEqual(
+    calls.switchModel.map((c) => c.model.id),
+    ["two", "three"],
+  );
 });

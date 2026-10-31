@@ -30,7 +30,9 @@ export default {
     const logFile =
       typeof opt.logFile === "string" ? opt.logFile : process.env.MODEL_FALLBACK_LOG || "";
 
-    const attempts = new Map(); // sessionID -> failovers used
+    const attempts = new Map(); // sessionID -> failovers used in this failure sequence
+    const attempted = new Map(); // sessionID -> Set of refs already tried in this sequence
+    const current = new Map(); // sessionID -> "provider/model" selected for the session
     const busy = new Set(); // sessionID -> failover in flight
     const cooldown = new Map(); // "provider/model" -> epoch ms it is usable again
 
@@ -86,8 +88,22 @@ export default {
 
       const set = await availableRefs();
       const now = Date.now();
-      log(`availability=${set.size} models; looking for next in chain`);
-      const next = chain.find((ref) => set.has(ref) && (cooldown.get(ref) || 0) <= now);
+      const tried = attempted.get(sessionID) || new Set();
+      const selected = current.get(sessionID);
+      // The model that just failed must not be picked again even if this
+      // sequence never switched to it (for example the first failure of a
+      // session that started on chain[0]).
+      if (selected) tried.add(selected);
+      log(
+        `availability=${set.size} models; already tried=${tried.size}; looking for next in chain`,
+      );
+      // Skip what the session is already on and what this failure sequence
+      // has already moved to, otherwise the first available entry is picked
+      // forever and later providers are never reached.
+      const next = chain.find(
+        (ref) =>
+          set.has(ref) && (cooldown.get(ref) || 0) <= now && !tried.has(ref) && ref !== selected,
+      );
       if (!next) {
         log("no available model left in chain");
         return;
@@ -96,21 +112,30 @@ export default {
       const ref = splitRef(next);
       if (!ref) return;
 
-      attempts.set(sessionID, used + 1);
       try {
         await ctx.session.switchModel({
           sessionID,
           model: { providerID: ref.providerID, id: ref.modelID },
         });
-        log(
-          `session ${sessionID} moved to ${next} (attempt ${used + 1}/${maxAttempts}) after ` +
-            `${error?.type || "error"}`,
-        );
       } catch (e) {
+        // A failed switch is a provider problem, not a failed inference: cool
+        // the model down and leave the attempt budget and progression alone,
+        // so the next failure can pick the entry after it.
         cooldown.set(next, Date.now() + cooldownMs);
         log(`switchModel to ${next} failed: ${e?.message}`);
         return;
       }
+
+      tried.add(next);
+      attempted.set(sessionID, tried);
+      attempts.set(sessionID, used + 1);
+      // Record the new model immediately: the session.model.selected event
+      // that follows may arrive after the next failure.
+      current.set(sessionID, next);
+      log(
+        `session ${sessionID} moved to ${next} (attempt ${used + 1}/${maxAttempts}) after ` +
+          `${error?.type || "error"}`,
+      );
 
       if (!autoRetry) return;
       try {
@@ -126,14 +151,38 @@ export default {
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          if (event?.type !== "session.execution.failed") continue;
-          const data = event.data || {};
-          const sessionID = data.sessionID;
-          const error = data.error || {};
+          const type = event?.type;
+          const sid = event?.data?.sessionID;
+
+          // A completed or user-interrupted run ends the failure sequence, so
+          // the next failure starts at the top of the chain again instead of
+          // inheriting another sequence's progress.
+          if (type === "session.execution.succeeded" || type === "session.execution.interrupted") {
+            if (!sid) continue;
+            attempted.delete(sid);
+            attempts.delete(sid);
+            continue;
+          }
+          if (type === "session.model.selected" || type === "session.step.started") {
+            const model = event.data?.model || {};
+            const id = model.id || model.modelID;
+            if (sid && model.providerID && id) current.set(sid, `${model.providerID}/${id}`);
+            continue;
+          }
+          if (type === "session.deleted") {
+            if (!sid) continue;
+            attempted.delete(sid);
+            attempts.delete(sid);
+            current.delete(sid);
+            continue;
+          }
+          if (type !== "session.execution.failed") continue;
+
+          const error = event.data?.error || {};
           log(
-            `failed event: session=${sessionID} error=${error.type} msg=${String(error.message).slice(0, 120)}`,
+            `failed event: session=${sid} error=${error.type} msg=${String(error.message).slice(0, 120)}`,
           );
-          if (!sessionID || busy.has(sessionID)) continue;
+          if (!sid || busy.has(sid)) continue;
 
           const haystack = `${error.type || ""} ${error.message || ""}`;
           if (!RETRYABLE.test(haystack)) {
@@ -141,11 +190,11 @@ export default {
             continue;
           }
 
-          busy.add(sessionID);
+          busy.add(sid);
           try {
-            await failover(sessionID, error);
+            await failover(sid, error);
           } finally {
-            busy.delete(sessionID);
+            busy.delete(sid);
           }
         }
       } catch {}
